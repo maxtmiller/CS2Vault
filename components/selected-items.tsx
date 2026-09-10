@@ -157,6 +157,7 @@ export function SelectedItems({
 
       const requestData = {
         item: item_data[0],
+        exclude: responseItems.flatMap((item: any) => (item.stickers as any[])?.map((s: any) => s.name).filter(Boolean) ?? []),
       };
 
       const payload = {
@@ -164,7 +165,6 @@ export function SelectedItems({
         data: requestData,
       };
 
-      // Call the API with the combined items
       const response = await fetch("/api/steam/loadout", {
         method: "POST",
         headers: {
@@ -301,7 +301,7 @@ export function SelectedItems({
       const requestData = {
         items: combinedItems,
         weapon_preferences: selectedWeaponTypes.includes("any")
-          ? undefined
+          ? ["any"]
           : selectedWeaponTypes,
       };
 
@@ -610,9 +610,14 @@ export function SelectedItems({
       </ScrollArea>
 
       {/* Weapon Type Selection Buttons */}
-      {(items[0].type === "★ Gloves" ||
-        items[0].type === "★ Knives" ||
-        items.length > 1) && (
+      {items.length > 0 &&
+        !(
+          items.length === 1 &&
+          (items[0].type === "Rifles" ||
+            items[0].type === "SMGs" ||
+            items[0].type === "Pistols" ||
+            items[0].type === "Heavy")
+        ) && (
         <div className="mt-4 border-t border-gray-700 pt-4">
           <h3 className="text-sm font-medium mb-2">
             Select weapon types for suggestions:

@@ -58,7 +58,8 @@ export async function POST(request: NextRequest) {
             return NextResponse.json(inventory);
         } else {
             const item = data.data.item;
-            const results = await getCraftSuggestionCohere(item);
+            const exclude: string[] = data.data.exclude ?? [];
+            const results = await getCraftSuggestionCohere(item, exclude);
             const inventory = await processStickerJsonData(results, item);
             return NextResponse.json(inventory);
         }

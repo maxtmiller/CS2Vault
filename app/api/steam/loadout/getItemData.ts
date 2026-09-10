@@ -160,7 +160,12 @@ export async function getSuggestionItemInfo(
 
     const item = Object.values(full_skin_data).find(item => item.name === items.name);
 
-    console.log(item)
+    console.log(`[getItemData] looking up: "${items.name}" → found: ${!!item}`);
+    if (!item) {
+        // Try case-insensitive match to diagnose naming mismatches
+        const closeMatch = Object.values(full_skin_data).find(i => i.name.toLowerCase() === items.name.toLowerCase());
+        console.log(`[getItemData] case-insensitive match: ${closeMatch ? closeMatch.name : 'none'}`);
+    }
 
     if (!item) {
         return null;

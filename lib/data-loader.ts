@@ -110,17 +110,11 @@ export function getFullSkinData() {
 
 
 export async function fetchData() {
+  if (full_item_data && full_price_data && full_skin_data) return;
   try {
-    await fetchURLData();
-    console.log("Fetched main data json successfully.");
+    await fetchBackupData();
   } catch (error) {
-      console.error("Error fetching main data, attempting backup...", error);
-      try {
-        await fetchBackupData();
-        console.log("Fetched backup data successfully.");
-      } catch (backupError) {
-        console.error("Error fetching backup data as well.", backupError);
-        return [];
-      }
+    console.error("Error fetching backup data.", error);
+    return [];
   }
 }
