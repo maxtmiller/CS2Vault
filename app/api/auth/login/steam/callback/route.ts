@@ -1,46 +1,63 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createSteamSession } from "@/lib/session"
 
+// Nonce cache to prevent duplicate verify calls within the same instance
+const usedNonces = new Map<string, number>()
+const NONCE_TTL_MS = 60_000
+
+function pruneNonces() {
+  const now = Date.now()
+  for (const [nonce, ts] of usedNonces) {
+    if (now - ts > NONCE_TTL_MS) usedNonces.delete(nonce)
+  }
+}
+
+async function verifySteamOpenId(verifyParams: URLSearchParams, attempt = 0): Promise<string> {
+  const res = await fetch("https://steamcommunity.com/openid/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: verifyParams.toString(),
+  })
+
+  if (res.status === 429) {
+    if (attempt >= 3) throw new Error("Steam API error: 429 Too Many Requests")
+    const delay = 500 * Math.pow(2, attempt)
+    await new Promise((r) => setTimeout(r, delay))
+    return verifySteamOpenId(verifyParams, attempt + 1)
+  }
+
+  if (!res.ok) throw new Error(`Steam API error: ${res.status} ${res.statusText}`)
+  return res.text()
+}
+
 export async function GET(request: NextRequest) {
   try {
-    // Get all OpenID parameters from the request
     const searchParams = request.nextUrl.searchParams
     const mode = searchParams.get("openid.mode")
 
-    // Ensure this is an OpenID response
     if (mode !== "id_res") {
       console.error("Invalid OpenID mode:", mode)
       return NextResponse.redirect(new URL("/", request.url))
     }
 
-    // Step 1: Verify the authentication response
-    // Create a new set of parameters for verification
-    const verifyParams = new URLSearchParams()
+    // Deduplicate by nonce — prevents duplicate verify calls from concurrent instances
+    const nonce = searchParams.get("openid.response_nonce") ?? ""
+    pruneNonces()
+    if (usedNonces.has(nonce)) {
+      console.error("Duplicate nonce rejected:", nonce)
+      return NextResponse.redirect(new URL("/", request.url))
+    }
+    usedNonces.set(nonce, Date.now())
 
-    // Copy all openid parameters
+    const verifyParams = new URLSearchParams()
     for (const [key, value] of searchParams.entries()) {
       if (key.startsWith("openid.")) {
-        // For verification, we change mode to 'check_authentication'
-        if (key === "openid.mode") {
-          verifyParams.append(key, "check_authentication")
-        } else {
-          verifyParams.append(key, value)
-        }
+        verifyParams.append(key, key === "openid.mode" ? "check_authentication" : value)
       }
     }
 
-    // Send verification request to Steam
-    const verifyResponse = await fetch("https://steamcommunity.com/openid/login", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: verifyParams.toString(),
-    })
+    const verifyText = await verifySteamOpenId(verifyParams)
 
-    const verifyText = await verifyResponse.text()
-
-    // If verification failed, redirect to home
     if (!verifyText.includes("is_valid:true")) {
       console.error("Steam authentication verification failed")
       return NextResponse.redirect(new URL("/", request.url))

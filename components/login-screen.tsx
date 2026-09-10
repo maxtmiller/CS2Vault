@@ -166,7 +166,7 @@ export function LoginScreen() {
       }
 
       const response = await fetch(
-        `/api/auth/qr${refresh ? "?refresh=true" : ""}`,
+        `/api/auth/login/qr${refresh ? "?refresh=true" : ""}`,
         {
           method: "GET",
           headers: {
@@ -297,10 +297,10 @@ export function LoginScreen() {
                 Steam
               </TabsTrigger>
               <TabsTrigger
-                value="jwt"
+                value="qr"
                 className="data-[state=active]:bg-gray-900 data-[state=active]:text-white text-gray-400"
               >
-                JWT Token
+                QR Code
               </TabsTrigger>
             </TabsList>
 

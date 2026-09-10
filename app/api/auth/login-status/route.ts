@@ -43,6 +43,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Check if we have an active session from the QR login
+    console.log('[login-status] session:', !!session, 'accessToken:', !!session?.accessToken, 'accountName:', session?.accountName);
     if (session && session.accessToken) {
       // Verify the session is still valid
       try {

@@ -259,32 +259,93 @@ export async function initializeCSGOInventory(authData, loginType) {
         csgo.setMaxListeners(30);
 
         let steamID;
+        let settled = false;
 
-        function handleLoggedOn() {
-            console.log('Logged into Steam.');
-            client.gamesPlayed([730]);
-            steamID = client.steamID.getSteamID64();
+        function cleanup(logOff = true) {
+            if (logOff) {
+                try { client.logOff(); } catch (_) {}
+            }
+            client.removeAllListeners();
+            csgo.removeAllListeners();
         }
 
+        function settle(fn) {
+            if (settled) return;
+            settled = true;
+            clearTimeout(gcTimeout);
+            fn();
+        }
+
+        // Fail hard if GC never connects within 60s
+        const gcTimeout = setTimeout(() => {
+            console.error('[GC] Timed out waiting for connectedToGC after 60s');
+            settle(() => {
+                cleanup();
+                reject({ success: false, details: 'Timed out waiting for CS2 Game Coordinator connection.', item_data: [], steamID: null, storage_units: [] });
+            });
+        }, 60000);
+
+        function handleLoggedOn() {
+            console.log('[AUTH] Logged into Steam. SteamID:', client.steamID?.getSteamID64());
+            console.log('[AUTH] Calling gamesPlayed([730]) to launch CS2...');
+            client.gamesPlayed([730]);
+            steamID = client.steamID.getSteamID64();
+            console.log('[AUTH] gamesPlayed sent. Waiting for connectedToGC...');
+        }
+
+        client.on('steamGuard', (domain, callback, lastCodeWrong) => {
+            console.log('[AUTH] Steam Guard requested. domain:', domain, 'lastCodeWrong:', lastCodeWrong);
+        });
+
+        client.on('loginKey', (key) => {
+            console.log('[AUTH] Login key received.');
+        });
+
+        client.on('webSession', (sessionID, cookies) => {
+            console.log('[AUTH] Web session established. sessionID:', sessionID);
+        });
+
+        client.on('disconnected', (eresult, msg) => {
+            console.log('[CLIENT] Disconnected. eresult:', eresult, 'msg:', msg);
+        });
+
+        client.on('appOwnershipCached', () => {
+            console.log('[CLIENT] App ownership cached.');
+        });
+
+        client.on('receivedFromGC', (appid, msgType, payload) => {
+            console.log('[GC] receivedFromGC appid:', appid, 'msgType:', msgType, 'payloadLen:', payload?.length);
+            // 4009 = ClientConnectionStatus — log the raw payload to see rejection reason
+            if (msgType === 4009) {
+                console.log('[GC] ClientConnectionStatus payload (hex):', payload?.toString('hex'));
+            }
+        });
+
+        csgo.on('disconnectedFromGC', (reason) => {
+            console.log('[GC] Disconnected from GC. reason:', reason);
+        });
+
         if (loginType === 1) {
-            console.log('QR Code Flow');
+            console.log('[AUTH] QR Code Flow — using refreshToken');
             client.logOn({ refreshToken: authData.refreshToken });
             client.once('loggedOn', handleLoggedOn);
         } else {
-            console.log('JWT Flow');
+            console.log('[AUTH] JWT Flow — account:', authData.account_name, 'steamid:', authData.steamid);
+            console.log('[AUTH] Token prefix:', authData.token?.substring(0, 20));
             client.logOn({
                 accountName: authData.account_name,
                 webLogonToken: authData.token,
                 steamID: authData.steamid,
             });
             client.once('loggedOn', () => {
+                console.log('[AUTH] loggedOn fired for JWT flow');
                 handleLoggedOn();
                 client.setPersona(SteamUser.EPersonaState.Online);
             });
         }
 
         csgo.once('connectedToGC', async () => {
-            console.log('Connected to CS2 Game Coordinator.');
+            console.log('[GC] Connected to CS2 Game Coordinator.');
             try {
                 await fetchData();
                 full_item_data = getFullItemData();
@@ -313,31 +374,30 @@ export async function initializeCSGOInventory(authData, loginType) {
                     }
                 }
 
-                console.log('Casket items loaded.');
+                console.log('[GC] Casket items loaded.');
                 items_data.push(normalItems);
-                console.log('Inventory data saved.');
+                console.log('[GC] Inventory data saved.');
 
-                client.logOff();
                 let mergedData = await mergeData(items_data.flat());
                 mergedData = await appendInfo(mergedData);
+                console.log('[GC] Data merged and appended.');
 
-                client.removeAllListeners();
-                csgo.removeAllListeners();
-                console.log('Listeners cleaned');
-
-                resolve({ success: true, item_data: JSON.stringify(mergedData, null, 2), steamID, storage_units });
+                settle(() => {
+                    cleanup();
+                    resolve({ success: true, item_data: JSON.stringify(mergedData, null, 2), steamID, storage_units });
+                });
 
             } catch (err) {
-                console.error('Error processing inventory:', err);
-                client.logOff();
-                client.removeAllListeners();
-                csgo.removeAllListeners();
-                reject(err);
+                console.error('[GC] Error processing inventory:', err);
+                settle(() => {
+                    cleanup();
+                    reject(err);
+                });
             }
         });
 
         client.once('error', (err) => {
-            console.error('Steam login error:', err);
+            console.error('[CLIENT] Steam error event:', err.message, '| eresult:', err.eresult, '| full:', err);
 
             let error_details = '';
             if (err.message === 'AccessDenied') {
@@ -348,9 +408,10 @@ export async function initializeCSGOInventory(authData, loginType) {
                 error_details = 'Your Steam account is logged in elsewhere. Please log out from other devices and try again.';
             }
 
-            client.removeAllListeners();
-            csgo.removeAllListeners();
-            reject({ success: false, details: error_details, item_data: [], steamID: null, storage_units: [] });
+            settle(() => {
+                cleanup(false);
+                reject({ success: false, details: error_details, item_data: [], steamID: null, storage_units: [] });
+            });
         });
     });
 }

@@ -11,7 +11,7 @@ export async function createSteamSession(steamId: string) {
     }),
     {
       httpOnly: true,
-      secure: true,
+      secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
       maxAge: (24 * 60 * 60) - 1,
       path: "/",
