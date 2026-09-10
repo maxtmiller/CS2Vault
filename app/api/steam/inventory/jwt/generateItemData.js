@@ -314,6 +314,7 @@ export async function initializeCSGOInventory(authData, loginType) {
         });
 
         client.on('receivedFromGC', (appid, msgType, payload) => {
+            if (msgType === 21 || msgType === 23) return; // Ignore these messages to reduce log spam
             console.log('[GC] receivedFromGC appid:', appid, 'msgType:', msgType, 'payloadLen:', payload?.length);
             // 4009 = ClientConnectionStatus — log the raw payload to see rejection reason
             if (msgType === 4009) {

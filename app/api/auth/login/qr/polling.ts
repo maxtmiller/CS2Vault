@@ -1,66 +1,41 @@
-import { EventEmitter } from "events"
 import { LoginSession, EAuthTokenPlatformType } from "steam-session"
 import QRCode from "qrcode"
-import { cookies } from "next/headers"
+import { authEmitter, setQRSession, getQRSession } from "@/lib/qr-state"
 
-export let session: LoginSession // Make session available outside the function
-export const authEmitter = new EventEmitter() // Create a global emitter for authentication events
+export { authEmitter }
 
 export async function flowLoginRegularQR() {
-  const emitterAccount = new EventEmitter()
+  const s = new LoginSession(EAuthTokenPlatformType.SteamClient)
+  setQRSession(s)
+  console.log("Start with QR")
+
   return new Promise(async (resolve) => {
-    session = new LoginSession(EAuthTokenPlatformType.SteamClient)
-    console.log("Start with QR")
+    s.on("authenticated", async () => {
+      console.log(`Logged into Steam as ${s.accountName}`)
 
-    session.on("authenticated", async () => {
-      console.log(`Logged into Steam as ${session.accountName}`)
-
-      const cookieStore = await cookies()
-      cookieStore.set(
-        "steam_session",
-        JSON.stringify({
-          steamId: session.steamID,
-          authenticated: true,
-          accountName: session.accountName,
-          refreshToken: session.refreshToken,
-          accessToken: session.accessToken,
-          // accessTokenSetAt: session.accessTokenSetAt,
-          expiresAt: Date.now() + 24 * 60 * 60 * 1000, // 24 hours
-        }),
-        {
-          secure: process.env.NODE_ENV === "production",
-          sameSite: "lax",
-          maxAge: (24 * 60 * 60) - 1, // 24 hours
-          path: "/",
-        },
-      )
-
-      // Emit the authenticated event to the global emitter
       authEmitter.emit("authenticated", {
-        steamId: session.steamID,
-        accountName: session.accountName,
-        refreshToken: session.refreshToken,
-        accessToken: session.accessToken,
-        // accessTokenSetAt: session.accessTokenSetAt,
+        steamId: s.steamID,
+        accountName: s.accountName,
+        refreshToken: s.refreshToken,
+        accessToken: s.accessToken,
       })
 
-      resolve({ responseStatus: "loggedIn", session })
+      resolve({ responseStatus: "loggedIn", session: s })
     })
 
-    session.once("timeout", () => {
+    s.once("timeout", () => {
       console.log("Login attempt timed out.")
       resolve({ responseStatus: "defaultError" })
     })
 
-    session.once("error", (err) => {
+    s.once("error", (err: Error) => {
       console.log("Error:", err.message)
       resolve({ responseStatus: "defaultError" })
     })
 
     try {
       console.log("Attempting to start QR login...")
-      const result = await session.startWithQR()
-      // console.log("QR Login Result:", result)
+      const result = await s.startWithQR()
 
       if (!result || !result.qrChallengeUrl) {
         throw new Error("QR Challenge URL is missing")
@@ -68,23 +43,19 @@ export async function flowLoginRegularQR() {
 
       console.log(`Scan this QR code to log in: ${result.qrChallengeUrl}`)
 
-      // Generate QR code data URL to send to the client
       const qrCodeDataUrl = await QRCode.toDataURL(result.qrChallengeUrl)
 
-      emitterAccount.emit("qrLogin:show", qrCodeDataUrl)
-
-      // Return the QR code URL for the client to display
       resolve({
         responseStatus: "waitingForQR",
         qrCodeDataUrl,
         qrChallengeUrl: result.qrChallengeUrl,
-        session,
+        session: s,
       })
     } catch (err) {
       if (err instanceof Error) {
         console.error("QR Login failed:", err.message)
       } else {
-        console.error(`Unknown error:`, err) // Handle non-Error cases
+        console.error(`Unknown error:`, err)
       }
       resolve({ responseStatus: "defaultError" })
     }
@@ -92,11 +63,12 @@ export async function flowLoginRegularQR() {
 }
 
 export async function refreshQrCode() {
-  if (!session) {
+  const s = getQRSession()
+  if (!s) {
     return { responseStatus: "defaultError", message: "Session not initialized." }
   }
   try {
-    const result = await session.startWithQR()
+    const result = await s.startWithQR()
     if (!result || !result.qrChallengeUrl) {
       throw new Error("QR Challenge URL is missing")
     }
@@ -106,9 +78,8 @@ export async function refreshQrCode() {
     if (err instanceof Error) {
       console.error("QR Refresh failed:", err.message)
     } else {
-      console.error(`Unknown error:`, err) // Handle non-Error cases
+      console.error(`Unknown error:`, err)
     }
     return { responseStatus: "defaultError" }
   }
 }
-

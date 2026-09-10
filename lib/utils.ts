@@ -24,12 +24,16 @@ export async function fetchAllInventoryData(authData: string, loginType: number)
   console.log("Fetching private inventory data from steam client...");
 
   try {
+    // For QR logins (loginType 1), the refresh token is read server-side from the encrypted cookie.
+    // Never send it from the client.
+    const body = loginType === 1
+      ? JSON.stringify({ loginType })
+      : JSON.stringify({ authData, loginType });
+
     const response = await fetch("/api/steam/inventory/jwt", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ authData: authData, loginType: loginType }),
+      headers: { "Content-Type": "application/json" },
+      body,
     })
 
     if (!response.ok) {

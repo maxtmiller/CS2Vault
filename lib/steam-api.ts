@@ -140,10 +140,10 @@ export async function refreshInventory(steamId: string, jwt: string): Promise<{ 
       "login_type",
       JSON.stringify({
         timestamp: Date.now(),
-          expiresAt: Date.now() + 24 * 60 * 60 * 1000,
-          type: "jwt",
-          loginType: 2,
-          authData: parsedLoginInfo.type === "jwt" ? jwt : JSON.stringify({ steamid: steamId }),
+        expiresAt: Date.now() + 7 * 60 * 60 * 1000,
+        type: parsedLoginInfo.type,
+        loginType: parsedLoginInfo.loginType,
+        authData: parsedLoginInfo.type === "jwt" ? jwt : "",
       }),
     )
     return response

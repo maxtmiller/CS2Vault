@@ -77,14 +77,6 @@ export function LoginScreen() {
     try {
       stopPolling();
 
-      const authData = {
-        responseStatus: data.responseStatus,
-        accountName: data.session.accountName,
-        refreshToken: data.session.refreshToken,
-        accessToken: data.session.accessToken,
-        // accessTokenSetAt: data.session.accessTokenSetAt,
-      };
-
       const EXPIRATION_TIME = 1000 * 60 * 60 * 7;
 
       localStorage.setItem(
@@ -94,7 +86,7 @@ export function LoginScreen() {
           expiresAt: Date.now() + EXPIRATION_TIME,
           type: "qr",
           loginType: 1,
-          authData: JSON.stringify(authData) || "",
+          authData: "", // refresh token is stored server-side only
         })
       );
 

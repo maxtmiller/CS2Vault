@@ -172,6 +172,8 @@ export function Inventory({ steamId }: { steamId: string | null }) {
   }, [selectedItems]);
 
   useEffect(() => {
+    let logoutTimer: ReturnType<typeof setTimeout> | null = null;
+
     async function loadInventory() {
       if (!steamId) {
         setLoading(false);
@@ -199,7 +201,16 @@ export function Inventory({ steamId }: { steamId: string | null }) {
             description: data.error,
             variant: "destructive",
           });
-          setTimeout(() => handleLogout(), 5000);
+          // Only auto-logout on auth errors, not transient errors like concurrent requests
+          const isAuthError = data.error && (
+            data.error.includes("Login") ||
+            data.error.includes("expired") ||
+            data.error.includes("Session") ||
+            data.error.includes("login")
+          );
+          if (isAuthError) {
+            logoutTimer = setTimeout(() => handleLogout(), 5000);
+          }
         }
       } catch (error) {
         console.log("Error loading inventory:", error);
@@ -208,6 +219,7 @@ export function Inventory({ steamId }: { steamId: string | null }) {
       }
     }
     loadInventory();
+    return () => { if (logoutTimer) clearTimeout(logoutTimer); };
   }, [steamId]);
 
   useEffect(() => {

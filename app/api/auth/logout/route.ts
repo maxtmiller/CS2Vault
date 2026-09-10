@@ -1,38 +1,26 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { session } from "../login/qr/polling"; // Import the session
+import { getQRSession } from "@/lib/qr-state";
 
 export async function POST(request: NextRequest) {
   try {
-    const searchParams = request.nextUrl.searchParams;
-    const steamId = searchParams.get("steamid");
-
-    // Clear the session cookie
     const cookieStore = await cookies();
     cookieStore.delete("steam_session");
+    cookieStore.delete("steam_refresh");
 
-    // Reset the global session variable if it exists
+    const session = getQRSession();
     if (session) {
       try {
-        // Attempt to end the session if possible
         if (typeof session.endSession === "function") {
           await session.endSession();
         }
-
-        // Reset the session properties
-        if (session.accessToken) {
-          session.accessToken = null;
-        }
-        if (session.refreshToken) {
-          session.refreshToken = null;
-        }
+        if (session.accessToken) session.accessToken = null;
+        if (session.refreshToken) session.refreshToken = null;
       } catch (error) {
         console.error("Error ending session:", error);
-        // Continue with logout even if ending session fails
       }
     }
 
-    // Return success response
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("Error during logout:", error);
