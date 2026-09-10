@@ -5,8 +5,16 @@ import { GoogleGenAI } from "@google/genai";
 import { Pinecone } from '@pinecone-database/pinecone';
 
 const cohere = new CohereClientV2({ token: process.env.COHERE_API_KEY! });
-const pinecone = new Pinecone({ apiKey: process.env.PINECONE_API_KEY! });
-const pineconeIndex = pinecone.index(process.env.PINECONE_INDEX!);
+
+let pineconeIndex: ReturnType<Pinecone['index']> | null = null;
+
+function getPineconeIndex() {
+    if (!pineconeIndex) {
+        const pinecone = new Pinecone({ apiKey: process.env.PINECONE_API_KEY! });
+        pineconeIndex = pinecone.index(process.env.PINECONE_INDEX!);
+    }
+    return pineconeIndex;
+}
 
 const KNIFE_TOKENS = ['Knife', 'Karambit', 'Bayonet', 'Dagger', 'Sword', 'Ursus', 'Navaja', 'Stiletto', 'Talon', 'Gut ', 'Flip', 'Falchion', 'Shadow', 'Bowie', 'Huntsman', 'Butterfly', 'Paracord', 'Survival', 'Nomad', 'Skeleton', 'Classic'];
 const GLOVE_TOKENS = ['Gloves', 'Wraps', 'Hand Wraps'];
@@ -220,7 +228,7 @@ export async function getCraftSuggestionCohere(item: any, exclude: string[] = []
         const queryVector = embedResponse.embeddings?.float?.[0];
         if (!queryVector) throw new Error('Failed to get embedding vector');
 
-        const results = await pineconeIndex.query({
+        const results = await getPineconeIndex().query({
             vector: queryVector,
             topK: 5 + exclude.length,
             includeMetadata: true,
