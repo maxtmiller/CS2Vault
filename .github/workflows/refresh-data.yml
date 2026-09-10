@@ -1,0 +1,34 @@
+name: Refresh CS2 Data
+
+on:
+  schedule:
+    - cron: '0 3 */7 * *'
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Refresh data files
+        run: node scripts/refresh-data.mjs
+
+      - name: Index new stickers to Pinecone
+        run: node scripts/index-stickers.mjs
+        env:
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
+          PINECONE_INDEX: ${{ secrets.PINECONE_INDEX }}
+
+      - name: Commit updated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/backup/
+          git diff --staged --quiet || git commit -m "chore: refresh CS2 data"
+          git push
