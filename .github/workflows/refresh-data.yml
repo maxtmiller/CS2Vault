@@ -15,6 +15,9 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Install dependencies
+        run: npm ci
+
       - name: Refresh data files
         run: node scripts/refresh-data.mjs
 
