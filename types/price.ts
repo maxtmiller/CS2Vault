@@ -9,3 +9,14 @@ export interface PriceData {
     }
   }
 }
+
+export interface RawPriceData {
+  metadata: {
+    updated_at: string
+    currency: string
+    item_count: number
+  }
+  prices: {
+    [key: string]: number
+  }
+}

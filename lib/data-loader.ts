@@ -1,7 +1,7 @@
 import fs from "fs"
 import path from "path"
 import { ItemData, SkinData } from "@/types/raw-item"
-import { PriceData } from "@/types/price"
+import { PriceData, RawPriceData } from "@/types/price"
 
 
 let itemDataCache: ItemData | null = null
@@ -28,9 +28,23 @@ export function getItemDataBackup(): ItemData {
   return itemDataCache
 }
 
+function normalizeRawPriceData(raw: RawPriceData | PriceData): PriceData {
+  if ('prices' in raw && typeof (raw as RawPriceData).prices === 'object') {
+    const rawPrices = (raw as RawPriceData).prices;
+    const normalized: PriceData = {};
+    for (const [key, cents] of Object.entries(rawPrices)) {
+      const dollars = cents / 100;
+      normalized[key] = { steam: { last_24h: dollars, last_7d: dollars, last_30d: dollars, last_90d: dollars, last_ever: dollars } };
+    }
+    return normalized;
+  }
+  return raw as PriceData;
+}
+
 export function getPriceDataBackup(): PriceData {
   if (!priceDataCache) {
-    priceDataCache = loadDataFromBackup<PriceData>("price_data.json")
+    const raw = loadDataFromBackup<RawPriceData>("price_data.json")
+    priceDataCache = normalizeRawPriceData(raw)
   }
   return priceDataCache
 }
@@ -60,7 +74,8 @@ export async function getItemDataURL(): Promise<ItemData> {
 
 export async function getPriceDataURL(): Promise<PriceData> {
   if (!priceDataCache) {
-    priceDataCache = await loadDataFromURL<PriceData>("https://raw.githubusercontent.com/ByMykel/counter-strike-price-tracker/main/static/prices/latest.json");
+    const raw = await loadDataFromURL<RawPriceData>("https://raw.githubusercontent.com/ByMykel/counter-strike-price-tracker/main/static/latest.json");
+    priceDataCache = normalizeRawPriceData(raw);
   }
   return priceDataCache;
 }
