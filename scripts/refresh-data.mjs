@@ -7,7 +7,7 @@ const FILES = [
         dest: 'public/backup/item_data.json',
     },
     {
-        url: 'https://raw.githubusercontent.com/ByMykel/counter-strike-price-tracker/main/static/prices/latest.json',
+        url: 'https://raw.githubusercontent.com/ByMykel/counter-strike-price-tracker/main/static/latest.json',
         dest: 'public/backup/price_data.json',
     },
     {
