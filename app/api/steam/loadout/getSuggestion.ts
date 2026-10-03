@@ -1,10 +1,23 @@
 import dotenv from "dotenv";
 dotenv.config();
-import { CohereClientV2 } from 'cohere-ai';
-import { GoogleGenAI } from "@google/genai";
+import OpenAI from "openai";
 import { Pinecone } from '@pinecone-database/pinecone';
+import { fetchData, getFullPriceData, getFullSkinData } from "@/lib/data-loader";
+import type { ResponseDataItem } from "./route";
 
-const cohere = new CohereClientV2({ token: process.env.COHERE_API_KEY! });
+const CHAT_MODEL = "gpt-5-mini";
+// Must match scripts/index-stickers.mjs; 1024 dims fits the existing Pinecone index
+const EMBEDDING_MODEL = "text-embedding-3-small";
+const EMBEDDING_DIMENSIONS = 1024;
+
+let openaiClient: OpenAI | null = null;
+
+function getOpenAI() {
+    if (!openaiClient) {
+        openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    }
+    return openaiClient;
+}
 
 let pineconeIndex: ReturnType<Pinecone['index']> | null = null;
 
@@ -16,219 +29,144 @@ function getPineconeIndex() {
     return pineconeIndex;
 }
 
-const KNIFE_TOKENS = ['Knife', 'Karambit', 'Bayonet', 'Dagger', 'Sword', 'Ursus', 'Navaja', 'Stiletto', 'Talon', 'Gut ', 'Flip', 'Falchion', 'Shadow', 'Bowie', 'Huntsman', 'Butterfly', 'Paracord', 'Survival', 'Nomad', 'Skeleton', 'Classic'];
-const GLOVE_TOKENS = ['Gloves', 'Wraps', 'Hand Wraps'];
+const ITEM_TYPES = ["pistol", "smg", "rifle", "sniper", "shotgun", "machinegun", "knife", "gloves"];
+const SUGGESTION_COUNT = 6;
+// Guns are suggested within this factor of the selected items' average price
+const PRICE_RANGE_FACTOR = 3;
 
-function buildExclusionClause(items: any[]): string {
-    const inputNames = items.map((i: any) => i.name.split('|')[0].trim());
-    const hasKnife = inputNames.some((n: string) => KNIFE_TOKENS.some(t => n.includes(t)));
-    const hasGlove = inputNames.some((n: string) => GLOVE_TOKENS.some(t => n.includes(t)));
+type SuggestionInput = {
+    name: string;
+    // The first request sends wear/price, "recommend more" sends raw inventory items
+    wear?: string;
+    wear_name?: string;
+    price?: number | null;
+    steam_price?: number | null;
+};
 
-    const excluded: string[] = [];
-    if (hasKnife) excluded.push('knives (any knife type — Karambit, Butterfly, M9 Bayonet, Flip Knife, etc.)');
-    if (hasGlove) excluded.push('gloves (any glove type — Sport Gloves, Moto Gloves, Hand Wraps, etc.)');
+function averageVectors(vectors: number[][]): number[] {
+    return vectors[0].map((_, i) => vectors.reduce((sum, v) => sum + v[i], 0) / vectors.length);
+}
 
-    let clause = '';
-    if (excluded.length > 0) {
-        clause += ` STRICT RULE: Do NOT suggest any ${excluded.join(' or ')} — the user already has one.`;
+export async function getItemSuggestion(data: {
+    items: SuggestionInput[];
+    weapon_preferences: string[];
+    exclude?: string[];
+}): Promise<ResponseDataItem[]> {
+    await fetchData();
+    const skins = Object.values(getFullSkinData());
+    const prices = getFullPriceData();
+    const index = getPineconeIndex().namespace("items");
+
+    // Items are indexed by skin id from skins_data.json (index-items.mjs)
+    const inputNames = new Set(data.items.map((i) => i.name));
+    const { records } = await index.fetch(skins.filter((s) => inputNames.has(s.name)).map((s) => s.id));
+    const inputs = Object.values(records);
+    if (inputs.length === 0) {
+        throw new Error("None of the selected items are in the item index");
     }
-    clause += ` Do NOT suggest the same weapon as any input item. Input items: ${inputNames.join(', ')}.`;
-    return clause;
+
+    const inputTypes = new Set(inputs.map((r) => r.metadata?.type));
+    const types = (data.weapon_preferences.includes("any") ? ITEM_TYPES : data.weapon_preferences)
+        // Never suggest a second knife or pair of gloves
+        .filter((t) => !((t === "knife" || t === "gloves") && inputTypes.has(t)));
+    if (types.length === 0) return [];
+
+    const { matches } = await index.query({
+        vector: averageVectors(inputs.map((r) => r.values as number[])),
+        topK: 100,
+        includeMetadata: true,
+        filter: {
+            type: { $in: types },
+            weapon: { $nin: [...new Set(inputs.map((r) => r.metadata?.weapon as string))] },
+            ...(data.exclude?.length ? { name: { $nin: data.exclude } } : {}),
+        },
+    });
+
+    // Knives and gloves are exempt from the price range, so they don't set it either
+    const inputPrices = data.items
+        .filter((i) => !i.name.startsWith("★"))
+        .map((i) => i.price ?? i.steam_price)
+        .filter((p): p is number => typeof p === "number" && p > 0);
+    const averagePrice = inputPrices.length
+        ? inputPrices.reduce((sum, p) => sum + p, 0) / inputPrices.length
+        : null;
+    const preferredWear = data.items[0].wear ?? data.items[0].wear_name;
+    const skinsById = new Map(skins.map((s) => [s.id, s]));
+
+    const candidates = matches.flatMap((m) => {
+        const name = m.metadata?.name as string;
+        const wears: string[] = skinsById.get(m.id)?.wears?.map((w: any) => w.name) ?? [];
+        const pricedWears = wears.filter((w) => prices[`${name} (${w})`]);
+        // Prefer the selected wear, but only show a wear that has a price
+        const wear = [preferredWear, ...pricedWears, ...wears].find(
+            (w) => w && wears.includes(w) && (pricedWears.length === 0 || pricedWears.includes(w))
+        );
+        if (!wear) return [];
+        return {
+            id: m.id,
+            name,
+            wear_name: wear,
+            description: m.metadata?.description as string,
+            type: m.metadata?.type as string,
+            weapon: m.metadata?.weapon as string,
+            price: prices[`${name} (${wear})`]?.steam.last_ever ?? null,
+        };
+    });
+
+    // Knives and gloves are expected to cost more, so only guns are held to the price range
+    const inPriceRange = (c: (typeof candidates)[number]) =>
+        c.type === "knife" ||
+        c.type === "gloves" ||
+        averagePrice === null ||
+        (c.price !== null &&
+            c.price >= averagePrice / PRICE_RANGE_FACTOR &&
+            c.price <= averagePrice * PRICE_RANGE_FACTOR);
+
+    // Similarity order, preferring in-range prices. A loadout has one skin per gun and only one
+    // knife and one pair of gloves, so those two are limited by type rather than by weapon.
+    // The first pass takes the best match of each requested type so one type can't fill every slot.
+    const ordered = [...candidates.filter(inPriceRange), ...candidates.filter((c) => !inPriceRange(c))];
+    const picked: typeof candidates = [];
+    const usedSlots = new Set<string>();
+    const coveredTypes = new Set<string>();
+    for (const firstPass of [true, false]) {
+        for (const c of ordered) {
+            if (picked.length === SUGGESTION_COUNT) break;
+            const slot = c.type === "knife" || c.type === "gloves" ? c.type : c.weapon;
+            if (usedSlots.has(slot) || (firstPass && coveredTypes.has(c.type))) continue;
+            usedSlots.add(slot);
+            coveredTypes.add(c.type);
+            picked.push(c);
+        }
+    }
+    picked.sort((a, b) => ordered.indexOf(a) - ordered.indexOf(b));
+
+    return picked.map(({ id, name, wear_name, description }) => ({ id, name, wear_name, description }));
 }
 
 
-export async function getItemSuggestionCohere(data: { items: any[], weapon_preferences: any[]}): Promise<any> {
-
-    try {
-        let prompt = `
-            ## User Message
-            I have the following items: 
-        `;
-        for (const item of data.items) {
-            const cur = ` a ${item.name} in ${item.wear} that costs $${item.price} with image ${item.image},`
-            prompt += cur;
-        }
-        prompt += "suggest at least 4 items that fit with my loadout with the same colours and a similar price."
-
-        prompt += "I want suggestions for the following item types only: "
-        for (const item of data.weapon_preferences) {
-            prompt += ' '+item;
-        }
-
-        prompt += buildExclusionClause(data.items);
-
-        console.log(prompt)
-
-        const systemMessage = `
-            ## Task and Context
-            You are a specialist in Valve's game CS2 and you will suggest items for the user that have very similar colours to the items provided.
-            DO NOT provide an item that the user inputted. Do NOT suggest any knife if the user already has a knife. Do NOT suggest any glove if the user already has a glove.
-            Provide as many items as needed to complete their loadout with the main guns if they input any. That is, provide AT LEAST 3 items.
-            Only provide the item types requested by the user, do not provide any other item types.
-            Give items in the same price range as the ones inputted, DO NOT provide an item that is much more expensive unless it is a knife or glove.
-            DO NOT include the wear in the item name, do not suggest stattrak items.
-            For knives and gloves, remember the names have a star in front, like "★ Karambit | Fade" and "★ Moto Gloves | Spearmint"
-            Do not include doppler phases in the name or any other specific details, like souvenir or stattrak just the name of the item.
-
-            ## Style Guide
-            Respond with a JSON object containing a single key "items" whose value is an array. Each element must have:
-            {
-                id: (a string starting from 0, unique for each one)
-                name: (the market hash name of the item, ie. USP-S | Printstream)
-                wear_name: (the wear_name of the item, ie. Factory New)
-                description: (why you think this is a good fit)
-            }
-        `;
-
-        const messages = [{ role: "system", content: systemMessage }, { role: "user", content: prompt }] as any;
-
-        const response = await cohere.chat({
-            model: 'command-a-plus-05-2026',
-            messages,
-            responseFormat: {
-                type: "json_object",
-                jsonSchema: {
-                    type: "object",
-                    properties: {
-                        items: {
-                            type: "array",
-                            items: {
-                                type: "object",
-                                properties: {
-                                    id: { type: "string" },
-                                    name: { type: "string" },
-                                    wear_name: { type: "string" },
-                                    description: { type: "string" },
-                                },
-                                required: ["id", "name", "wear_name", "description"],
-                            },
-                        },
-                    },
-                    required: ["items"],
-                },
-            },
-        } as any);
-
-        let responseText = "";
-        if (response.message?.content) {
-            for (const block of response.message.content) {
-                if (block.type === "text") {
-                    responseText = block.text;
-                    break;
-                }
-            }
-        }
-        const parsed = JSON.parse(responseText);
-        const parsedResponse = parsed.items ?? parsed;
-
-        return parsedResponse;
-    } catch (error: any) {
-        console.error(`Error occurred: ${error.message}`);
-        throw error;
-    }
-}
-
-
-export async function getItemSuggestionGemini(data: { items: any[], weapon_preferences: any[]}): Promise<any> {
-
-    const apiKey: string | undefined = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-        throw new Error("GEMINI_API_KEY is not defined in the environment variables.");
-    }
-    const ai = new GoogleGenAI({ apiKey: apiKey });
-    
-    try {
-
-        let prompt = `
-            ## User Message
-            I have the following items: 
-        `;
-        for (const item of data.items) {
-            const cur = ` a ${item.name} in ${item.wear} that costs $${item.price} with image ${item.image},`
-            prompt += cur;
-        }
-        prompt += "suggest at least 4 items that fit with my loadout with the same colours and a similar price."
-
-        prompt += "I want suggestions for the following item types only: "
-        for (const item of data.weapon_preferences) {
-            prompt += ' '+item;
-        }
-
-        prompt += `. IMPORTANT: Do NOT suggest any item of the same weapon type as the input items. The input item weapon types are: ${data.items.map((i: any) => i.name.split('|')[0].trim()).join(', ')}.`
-
-        console.log(prompt)
-
-        const systemMessage = `
-            ## Task and Context
-            You are a specialist in Valve's game CS2 and you will suggest items for the user that have very similar colours to the items provided.
-            DO NOT provide an item that the user inputted. Do NOT suggest any item whose base weapon name matches any of the input items' base weapon names.
-            Provide as many items as needed to complete their loadout with the main guns if they input any. That is, provide AT LEAST 3 items.
-            Only provide the item types requested by the user, do not provide any other item types.
-            Give items in the same price range as the ones inputted, DO NOT provide an item that is much more expensive unless it is a knife or glove.
-            DO NOT include the wear in the item name, do not suggest stattrak items.
-            For knives and gloves, remember the names have a star in front, like "★ Karambit | Fade" and "★ Moto Gloves | Spearmint"
-            Do not include doppler phases in the name or any other specific details, like souvenir or stattrak just the name of the item.
-
-            ## Style Guide
-            Respond in following the exact json specification below for each item suggested, and put all the items into an array that you will return
-            {
-                id: (a string starting from 0, unique for each one)
-                name: (the market hash name of the item, ie. USPS | Prinstream)
-                wear_name: (the wear_name of the item, ie. Factory New)
-                description: (why you think this is a good fit)
-            }
-        `;
-
-        const response = await ai.models.generateContent({
-            model: "gemini-2.0-flash",
-            contents: systemMessage+prompt,
-        });
-
-        let responseText = "";
-        if (response.text) {
-            console.log(response.text);
-            responseText = response.text;
-        }
-
-        const parsedResponse = JSON.parse(responseText.replace(/```json\s*/, "").replace(/```$/, ""));
-
-        return parsedResponse;
-    } catch (error: any) {
-        console.error(`Error occurred: ${error.message}`);
-        throw error;
-    }
-}
-
-
-export async function getCraftSuggestionCohere(item: any, exclude: string[] = []): Promise<any> {
+export async function getCraftSuggestion(item: any, exclude: string[] = []): Promise<any> {
     try {
         const itemName = item.name;
         const itemWear = item.wear_name ?? item.wear;
 
         const queryPrompt = `I have a ${itemName} (${itemWear}) CS2 skin. Describe in 2-3 sentences the colors, style, and theme of stickers that would look great on it in a 4x craft. Focus on visual characteristics like colors, patterns, and aesthetic feel.`;
-        const queryResponse = await cohere.chat({
-            model: 'command-a-plus-05-2026',
-            messages: [{ role: "user", content: queryPrompt }] as any,
-        } as any);
-
-        let queryText = "";
-        if (queryResponse.message?.content) {
-            for (const block of queryResponse.message.content) {
-                if (block.type === "text") { queryText = block.text; break; }
-            }
-        }
-
-        const embedResponse = await cohere.embed({
-            model: 'embed-english-v3.0',
-            texts: [queryText],
-            inputType: 'search_query',
-            embeddingTypes: ['float'],
+        const queryResponse = await getOpenAI().chat.completions.create({
+            model: CHAT_MODEL,
+            reasoning_effort: "low",
+            messages: [{ role: "user", content: queryPrompt }],
         });
+        const queryText = queryResponse.choices[0].message.content;
+        if (!queryText) throw new Error('Failed to get sticker description');
 
-        const queryVector = embedResponse.embeddings?.float?.[0];
-        if (!queryVector) throw new Error('Failed to get embedding vector');
+        const embedResponse = await getOpenAI().embeddings.create({
+            model: EMBEDDING_MODEL,
+            dimensions: EMBEDDING_DIMENSIONS,
+            input: queryText,
+        });
+        const queryVector = embedResponse.data[0].embedding;
 
-        const results = await getPineconeIndex().query({
+        const results = await getPineconeIndex().namespace("stickers").query({
             vector: queryVector,
             topK: 5 + exclude.length,
             includeMetadata: true,
@@ -243,58 +181,6 @@ export async function getCraftSuggestionCohere(item: any, exclude: string[] = []
                 description: `Semantically matched to ${itemName} based on color and style.`,
             }));
 
-    } catch (error: any) {
-        console.error(`Error occurred: ${error.message}`);
-        throw error;
-    }
-}
-
-
-export async function getCraftSuggestionGemini(item: any): Promise<any> {
-
-    const apiKey: string | undefined = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-        throw new Error("GEMINI_API_KEY is not defined in the environment variables.");
-    }
-    const ai = new GoogleGenAI({ apiKey: apiKey });
-    
-    try {
-
-        let prompt = `
-            ## User Message
-            I have the following item: a ${item.name} in ${item.wear} that costs $${item.price} with image ${item.image}.
-            Suggest at least 5 different stickers that would fit well with this item in a 4x craft.
-        `;
-
-        console.log(prompt)
-
-        const systemMessage = `
-            ## Task and Context
-            You are a specialist in Valve's game CS2 and you will suggest sticker crafts for the user that have very similar colours to the item provided and fit well.          
-
-            ## Style Guide
-            Respond in following the exact json specification below for each sticker suggested, and put all the stickers into an array that you will return. Do not respond with any other text.
-            {
-                id: (a string starting from 0, unique for each one)
-                name: (the market hash name of the sticker, ie. Sticker | drop (Holo) | Antwerp 2022)
-                description: (why you think this is a good fit)
-            }
-        `;
-        
-        const response = await ai.models.generateContent({
-            model: "gemini-2.0-flash",
-            contents: systemMessage+prompt,
-        });
-
-        let responseText = "";
-        if (response.text) {
-            console.log(response.text);
-            responseText = response.text;
-        }
-
-        const parsedResponse = JSON.parse(responseText.replace(/```json\s*/, "").replace(/```$/, ""));
-
-        return parsedResponse;
     } catch (error: any) {
         console.error(`Error occurred: ${error.message}`);
         throw error;

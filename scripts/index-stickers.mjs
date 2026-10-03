@@ -1,15 +1,19 @@
 import dotenv from 'dotenv';
 import { readFileSync } from 'fs';
-import { CohereClientV2 } from 'cohere-ai';
+import OpenAI from 'openai';
 import { Pinecone } from '@pinecone-database/pinecone';
 
 dotenv.config({ path: '.env' });
 
 const force = process.argv.includes('--force');
 
-const cohere = new CohereClientV2({ token: process.env.COHERE_API_KEY });
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// Must match app/api/steam/loadout/getSuggestion.ts
+const EMBEDDING_MODEL = 'text-embedding-3-small';
+const EMBEDDING_DIMENSIONS = 1024;
 const pinecone = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
-const index = pinecone.index(process.env.PINECONE_INDEX);
+const index = pinecone.index(process.env.PINECONE_INDEX).namespace('stickers');
 
 const itemData = JSON.parse(readFileSync('./public/backup/item_data.json', 'utf-8'));
 const stickers = Object.values(itemData).filter(i => i.name?.startsWith('Sticker |'));
@@ -57,16 +61,15 @@ for (let i = 0; i < newStickers.length; i += BATCH_SIZE) {
         return parts.join(', ');
     });
 
-    const embedResponse = await cohere.embed({
-        model: 'embed-english-v3.0',
-        texts,
-        inputType: 'search_document',
-        embeddingTypes: ['float'],
+    const embedResponse = await openai.embeddings.create({
+        model: EMBEDDING_MODEL,
+        dimensions: EMBEDDING_DIMENSIONS,
+        input: texts,
     });
 
     const vectors = batch.map((s, j) => ({
         id: s.id ?? `sticker-${i + j}`,
-        values: embedResponse.embeddings.float[j],
+        values: embedResponse.data[j].embedding,
         metadata: { name: s.name },
     }));
 

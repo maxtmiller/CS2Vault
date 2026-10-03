@@ -158,7 +158,9 @@ export async function getSuggestionItemInfo(
     full_price_data = getFullPriceData()
     full_skin_data = getFullSkinData()
 
-    const item = Object.values(full_skin_data).find(item => item.name === items.name);
+    // Look up by skin id first so Doppler gems keep their own image
+    const item = Object.values(full_skin_data).find(skin => skin.id === items.id)
+        ?? Object.values(full_skin_data).find(skin => skin.name === items.name);
 
     console.log(`[getItemData] looking up: "${items.name}" → found: ${!!item}`);
     if (!item) {
