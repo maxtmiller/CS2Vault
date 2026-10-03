@@ -2,7 +2,7 @@ import dotenv from "dotenv";
 dotenv.config();
 import OpenAI from "openai";
 import { Pinecone } from '@pinecone-database/pinecone';
-import { fetchData, getFullPriceData, getFullSkinData } from "@/lib/data-loader";
+import { fetchData, getFullItemData, getFullPriceData, getFullSkinData } from "@/lib/data-loader";
 import type { ResponseDataItem } from "./route";
 
 const CHAT_MODEL = "gpt-5-mini";
@@ -43,6 +43,14 @@ type SuggestionInput = {
     steam_price?: number | null;
 };
 
+// Inventory names can carry StatTrak/Souvenir and the wear, e.g. "★ StatTrak™ Karambit | Fade (Factory New)"
+function baseSkinName(name: string): string {
+    return name
+        .replace("StatTrak™ ", "")
+        .replace(/^Souvenir /, "")
+        .replace(/ \((Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$/, "");
+}
+
 function averageVectors(vectors: number[][]): number[] {
     return vectors[0].map((_, i) => vectors.reduce((sum, v) => sum + v[i], 0) / vectors.length);
 }
@@ -57,9 +65,12 @@ export async function getItemSuggestion(data: {
     const prices = getFullPriceData();
     const index = getPineconeIndex().namespace("items");
 
-    // Items are indexed by skin id from skins_data.json (index-items.mjs)
-    const inputNames = new Set(data.items.map((i) => i.name));
-    const { records } = await index.fetch(skins.filter((s) => inputNames.has(s.name)).map((s) => s.id));
+    // Skins are indexed by their skins_data.json id and agents by their item_data.json id (index-items.mjs)
+    const inputNames = new Set(data.items.map((i) => baseSkinName(i.name)));
+    const inputIds = [...skins, ...Object.values(getFullItemData())]
+        .filter((s) => inputNames.has(s.name))
+        .map((s) => s.id);
+    const { records } = await index.fetch([...new Set(inputIds)]);
     const inputs = Object.values(records);
     if (inputs.length === 0) {
         throw new Error("None of the selected items are in the item index");
@@ -122,19 +133,25 @@ export async function getItemSuggestion(data: {
             c.price >= averagePrice / PRICE_RANGE_FACTOR &&
             c.price <= averagePrice * PRICE_RANGE_FACTOR);
 
-    // Similarity order, preferring in-range prices. A loadout has one skin per gun and only one
-    // knife and one pair of gloves, so those two are limited by type rather than by weapon.
-    // The first pass takes the best match of each requested type so one type can't fill every slot.
+    // Similarity order, preferring in-range prices. Passes: the best match of each requested type,
+    // then one skin per weapon for variety, then (only when specific types were picked) more of the
+    // same weapons. With "any" the result is a loadout, so it gets one knife and one pair of gloves.
+    const isAny = data.weapon_preferences.includes("any");
+    const slotOf = (c: (typeof candidates)[number]) =>
+        isAny && (c.type === "knife" || c.type === "gloves") ? c.type : c.weapon;
+    const passes = isAny ? ["type", "slot"] : ["type", "slot", "fill"];
+
     const ordered = [...candidates.filter(inPriceRange), ...candidates.filter((c) => !inPriceRange(c))];
     const picked: typeof candidates = [];
     const usedSlots = new Set<string>();
     const coveredTypes = new Set<string>();
-    for (const firstPass of [true, false]) {
+    for (const pass of passes) {
         for (const c of ordered) {
             if (picked.length === SUGGESTION_COUNT) break;
-            const slot = c.type === "knife" || c.type === "gloves" ? c.type : c.weapon;
-            if (usedSlots.has(slot) || (firstPass && coveredTypes.has(c.type))) continue;
-            usedSlots.add(slot);
+            if (picked.includes(c)) continue;
+            if (pass !== "fill" && usedSlots.has(slotOf(c))) continue;
+            if (pass === "type" && coveredTypes.has(c.type)) continue;
+            usedSlots.add(slotOf(c));
             coveredTypes.add(c.type);
             picked.push(c);
         }

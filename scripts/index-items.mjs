@@ -51,7 +51,13 @@ for (const skin of Object.values(skinsData)) {
     seen.add(key);
     skins.push({ ...skin, type, gem });
 }
-console.log(`Found ${skins.length} weapon, knife and glove skins.`);
+// Agents are indexed so they can be used as suggestion inputs; queries never return the agent type
+const itemData = JSON.parse(readFileSync('./public/backup/item_data.json', 'utf-8'));
+for (const agent of Object.values(itemData)) {
+    if (!String(agent.id).startsWith('agent-') || !agent.image) continue;
+    skins.push({ ...agent, type: 'agent', gem: null, weapon: { name: 'Agent' } });
+}
+console.log(`Found ${skins.length} weapon, knife and glove skins and agents.`);
 
 const descriptions = existsSync(DESCRIPTIONS_PATH)
     ? JSON.parse(readFileSync(DESCRIPTIONS_PATH, 'utf-8'))
@@ -86,7 +92,9 @@ async function describe(skin) {
             content: [
                 {
                     type: 'text',
-                    text: 'This is a CS2 weapon skin. In 2-3 sentences describe only how it looks, for colour matching: the dominant and accent colours (name them concretely), the finish (e.g. anodized, metallic, matte, glossy, hydrographic), the pattern, and the overall style or theme. Do not name the weapon or the skin.',
+                    text: skin.type === 'agent'
+                        ? 'This is a CS2 agent (player character). In 2-3 sentences describe only how their outfit looks, for colour matching with weapon skins: the dominant and accent colours (name them concretely), materials and textures, and the overall style or theme. Do not name the character or faction.'
+                        : 'This is a CS2 weapon skin. In 2-3 sentences describe only how it looks, for colour matching: the dominant and accent colours (name them concretely), the finish (e.g. anodized, metallic, matte, glossy, hydrographic), the pattern, and the overall style or theme. Do not name the weapon or the skin.',
                 },
                 { type: 'image_url', image_url: { url: skin.image, detail: 'low' } },
             ],
