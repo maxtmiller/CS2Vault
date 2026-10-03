@@ -1,85 +1,42 @@
 import { LoginSession, EAuthTokenPlatformType } from "steam-session"
 import QRCode from "qrcode"
-import { authEmitter, setQRSession, getQRSession } from "@/lib/qr-state"
+import type { PendingQRLogin } from "@/lib/session"
 
-export { authEmitter }
+// Serverless instances don't share memory and freeze between requests, so instead of keeping a
+// LoginSession alive and letting it poll in the background, we start the QR session, hand the
+// clientId/requestId back to the caller (stored in a cookie), and poll once per status request.
+// steam-session has no public API for this, hence the private field access.
 
-export async function flowLoginRegularQR() {
+export async function startQRLogin() {
   const s = new LoginSession(EAuthTokenPlatformType.SteamClient)
-  setQRSession(s)
-  console.log("Start with QR")
+  const { qrChallengeUrl } = await s.startWithQR()
+  if (!qrChallengeUrl) throw new Error("QR Challenge URL is missing")
 
-  return new Promise(async (resolve) => {
-    s.on("authenticated", async () => {
-      console.log(`Logged into Steam as ${s.accountName}`)
+  const { clientId, requestId } = (s as any)._startSessionResponse
+  s.cancelLoginAttempt()
 
-      authEmitter.emit("authenticated", {
-        steamId: s.steamID,
-        accountName: s.accountName,
-        refreshToken: s.refreshToken,
-        accessToken: s.accessToken,
-      })
-
-      resolve({ responseStatus: "loggedIn", session: s })
-    })
-
-    s.once("timeout", () => {
-      console.log("Login attempt timed out.")
-      resolve({ responseStatus: "defaultError" })
-    })
-
-    s.once("error", (err: Error) => {
-      console.log("Error:", err.message)
-      resolve({ responseStatus: "defaultError" })
-    })
-
-    try {
-      console.log("Attempting to start QR login...")
-      const result = await s.startWithQR()
-
-      if (!result || !result.qrChallengeUrl) {
-        throw new Error("QR Challenge URL is missing")
-      }
-
-      console.log(`Scan this QR code to log in: ${result.qrChallengeUrl}`)
-
-      const qrCodeDataUrl = await QRCode.toDataURL(result.qrChallengeUrl)
-
-      resolve({
-        responseStatus: "waitingForQR",
-        qrCodeDataUrl,
-        qrChallengeUrl: result.qrChallengeUrl,
-        session: s,
-      })
-    } catch (err) {
-      if (err instanceof Error) {
-        console.error("QR Login failed:", err.message)
-      } else {
-        console.error(`Unknown error:`, err)
-      }
-      resolve({ responseStatus: "defaultError" })
-    }
-  })
+  return {
+    qrCodeDataUrl: await QRCode.toDataURL(qrChallengeUrl),
+    pending: { clientId, requestId: requestId.toString("base64") } as PendingQRLogin,
+  }
 }
 
-export async function refreshQrCode() {
-  const s = getQRSession()
-  if (!s) {
-    return { responseStatus: "defaultError", message: "Session not initialized." }
+export async function pollQRLogin(pending: PendingQRLogin) {
+  const s = new LoginSession(EAuthTokenPlatformType.SteamClient)
+  const res = await (s as any)._handler.pollLoginStatus({
+    clientId: pending.clientId,
+    requestId: Buffer.from(pending.requestId, "base64"),
+  })
+
+  if (!res.refreshToken) {
+    return { done: false as const, newClientId: res.newClientId as string | undefined }
   }
-  try {
-    const result = await s.startWithQR()
-    if (!result || !result.qrChallengeUrl) {
-      throw new Error("QR Challenge URL is missing")
-    }
-    const qrCodeDataUrl = await QRCode.toDataURL(result.qrChallengeUrl)
-    return { responseStatus: "waitingForQR", qrCodeDataUrl, qrChallengeUrl: result.qrChallengeUrl }
-  } catch (err) {
-    if (err instanceof Error) {
-      console.error("QR Refresh failed:", err.message)
-    } else {
-      console.error(`Unknown error:`, err)
-    }
-    return { responseStatus: "defaultError" }
+
+  s.refreshToken = res.refreshToken
+  return {
+    done: true as const,
+    steamID: s.steamID!.getSteamID64(),
+    accountName: res.accountName as string,
+    refreshToken: res.refreshToken as string,
   }
 }

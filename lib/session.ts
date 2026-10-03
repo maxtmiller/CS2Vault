@@ -59,6 +59,32 @@ export async function createQRSession(steamId: string, refreshToken: string) {
   );
 }
 
+export type PendingQRLogin = { clientId: string; requestId: string };
+
+export async function setPendingQRLogin(pending: PendingQRLogin) {
+  const cookieStore = await cookies();
+  cookieStore.set("steam_qr_pending", encrypt(JSON.stringify(pending)), {
+    ...COOKIE_OPTS,
+    maxAge: 5 * 60,
+  });
+}
+
+export async function getPendingQRLogin(): Promise<PendingQRLogin | null> {
+  const cookieStore = await cookies();
+  const cookie = cookieStore.get("steam_qr_pending");
+  if (!cookie) return null;
+  try {
+    return JSON.parse(decrypt(cookie.value));
+  } catch {
+    return null;
+  }
+}
+
+export async function clearPendingQRLogin() {
+  const cookieStore = await cookies();
+  cookieStore.delete("steam_qr_pending");
+}
+
 export async function getRefreshToken(): Promise<string | null> {
   const cookieStore = await cookies();
   const cookie = cookieStore.get("steam_refresh");
