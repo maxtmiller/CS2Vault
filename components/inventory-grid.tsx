@@ -415,6 +415,18 @@ export function InventoryGrid({
   // Get visible items based on the limit
   const displayedItems = filteredItems.slice(0, visibleItems);
 
+  // First load gets a slow staggered entrance; filter/sort changes re-key the grid and replay a
+  // quicker one. Price updates (e.g. currency changes) keep the same key so they don't animate.
+  const staggerEntranceRef = useRef(true);
+  const gridKey = `${JSON.stringify(filters)}|${sortBy}`;
+  const cardAnimationStyle = (index: number) =>
+    staggerEntranceRef.current
+      ? { animationDelay: `${Math.min(index, 30) * 35}ms`, animationDuration: "500ms" }
+      : { animationDelay: `${Math.min(index, 12) * 20}ms`, animationDuration: "300ms" };
+  useEffect(() => {
+    if (displayedItems.length > 0) staggerEntranceRef.current = false;
+  }, [displayedItems.length]);
+
   // Handle inventory reload with JWT token
   const handleReload = async () => {
     if (!showJwtInput) {
@@ -657,14 +669,18 @@ export function InventoryGrid({
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-          {displayedItems.map((item) => (
+        <div
+          key={gridKey}
+          className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
+        >
+          {displayedItems.map((item, index) => (
             <TooltipProvider key={item.id}>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Card
                     key={item.id}
-                    className={`overflow-hidden ${getRarityColorClass(
+                    style={cardAnimationStyle(index)}
+                    className={`overflow-hidden animate-in fade-in slide-in-from-bottom-3 ease-out fill-mode-backwards ${getRarityColorClass(
                       item.rarity_name
                     )} transition-all hover:scale-105 hover:shadow-lg border-2 ${
                       selectedItemIds?.includes(item.id)

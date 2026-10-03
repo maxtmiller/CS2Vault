@@ -10,6 +10,8 @@ import { InventoryStats } from "@/components/inventory-stats";
 import { LoadingInventory } from "@/components/loading-inventory";
 import { UserProfile } from "@/components/user-profile";
 import { fetchInventory, type InventoryItem } from "@/lib/steam-api";
+import { fadeOutPage } from "@/lib/utils";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -47,6 +49,7 @@ const currencies = [
 ];
 
 export function Inventory({ steamId }: { steamId: string | null }) {
+  const router = useRouter();
   const [loginType, setLoginType] = useState<string>("");
   const [selectedCurrency, setSelectedCurrency] = useState(() => {
     if (typeof window !== "undefined") {
@@ -128,9 +131,15 @@ export function Inventory({ steamId }: { steamId: string | null }) {
   const handleLogout = () => {
     localStorage.removeItem("login_type");
     localStorage.removeItem("inventory_data");
-    fetch(`/api/auth/logout?steamid=${steamId}`, { method: "POST" })
-      .then(() => window.location.replace("/"))
-      .catch((error) => console.error("Logout error:", error));
+    Promise.all([
+      fetch(`/api/auth/logout?steamid=${steamId}`, { method: "POST" }),
+      fadeOutPage(),
+    ])
+      .then(() => router.refresh())
+      .catch((error) => {
+        console.error("Logout error:", error);
+        document.body.style.opacity = "1";
+      });
   };
 
   function updateSteamPrices(multiplier: number) {
@@ -266,12 +275,10 @@ export function Inventory({ steamId }: { steamId: string | null }) {
     currencies.find((c) => c.code === selectedCurrency)?.char ?? "$";
 
   return (
-    <div className="min-h-screen bg-[#0a0e1a] text-white">
+    <div className="min-h-screen bg-[#0a0e1a] text-white animate-in fade-in duration-500">
       {/* Header */}
       <header
-        className={`${
-          isScrolled ? "fixed" : "sticky"
-        } w-full top-0 z-50 border-b border-white/5 bg-gray-950/90 backdrop-blur-md shadow-lg transition-all duration-300`}
+        className="sticky w-full top-0 z-50 border-b border-white/5 bg-gray-950/90 backdrop-blur-md shadow-lg"
       >
         <div className="container mx-auto px-4 py-3">
           <div className="flex items-center justify-between gap-4">
@@ -285,23 +292,23 @@ export function Inventory({ steamId }: { steamId: string | null }) {
 
             {/* Scrolled stats — desktop only */}
             <div
-              className={`hidden md:flex items-center gap-5 text-sm transition-all duration-300 ${
+              className={`hidden md:flex items-center gap-8 text-sm transition-all duration-300 ease-out ${
                 isScrolled
                   ? "opacity-100 translate-y-0"
                   : "opacity-0 -translate-y-3 pointer-events-none"
               }`}
             >
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-2">
                 <span className="text-gray-500">Items</span>
                 <span className="font-semibold">{items.length}</span>
               </div>
-              <div className="w-px h-3.5 bg-gray-700" />
-              <div className="flex items-center gap-1.5">
+              <div className="w-px h-4 bg-gray-700" />
+              <div className="flex items-center gap-2">
                 <span className="text-gray-500">Storage</span>
                 <span className="font-semibold">{storageUnits ?? 0}</span>
               </div>
-              <div className="w-px h-3.5 bg-gray-700" />
-              <div className="flex items-center gap-1.5">
+              <div className="w-px h-4 bg-gray-700" />
+              <div className="flex items-center gap-2">
                 <span className="text-gray-500">Value</span>
                 <span className="font-semibold text-green-400">
                   {currencyChar}{filteredValue.toFixed(2)}
@@ -327,10 +334,10 @@ export function Inventory({ steamId }: { steamId: string | null }) {
       <main ref={mainRef} className="container mx-auto px-4 py-5 pb-16">
         {/* Stats — hidden when scrolled */}
         <div
-          className={`mb-5 transition-all duration-300 ${
+          className={`mb-5 transition-all duration-300 ease-out ${
             isScrolled
-              ? "opacity-0 max-h-0 overflow-hidden mb-0"
-              : "opacity-100 max-h-40"
+              ? "opacity-0 -translate-y-2 pointer-events-none"
+              : "opacity-100 translate-y-0"
           }`}
         >
           <InventoryStats
@@ -409,7 +416,7 @@ export function Inventory({ steamId }: { steamId: string | null }) {
             {loading ? (
               <LoadingInventory />
             ) : (
-              <>
+              <div className="animate-in fade-in duration-500">
                 <InventoryGrid
                   items={items}
                   filters={filters}
@@ -443,7 +450,7 @@ export function Inventory({ steamId }: { steamId: string | null }) {
                       </Button>
                     </div>
                   )}
-              </>
+              </div>
             )}
           </div>
         </div>
@@ -461,7 +468,7 @@ export function Inventory({ steamId }: { steamId: string | null }) {
             <Github className="h-5 w-5" />
           </Link>
           <p className="text-center text-sm text-gray-600">
-            © 2025 CS2 Vault · Not affiliated with Valve or Steam
+            © {new Date().getFullYear()} CS2 Vault · Not affiliated with Valve or Steam
           </p>
           <Link
             href="https://steamcommunity.com/id/LowKey-W-Loki/"

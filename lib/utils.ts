@@ -2,6 +2,25 @@ import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
 import { InventoryItem } from "@/lib/steam-api"
 
+const PAGE_FADE_MS = 300;
+
+// delayMs keeps the current screen (e.g. a button's loading state) visible before fading
+export async function fadeOutPage(delayMs = 0): Promise<void> {
+  if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+  document.body.style.transition = `opacity ${PAGE_FADE_MS}ms ease`;
+  document.body.style.opacity = "0";
+  // Pages restored from the back/forward cache keep the faded-out style
+  window.addEventListener("pageshow", (e) => {
+    if (e.persisted) document.body.style.opacity = "1";
+  }, { once: true });
+  return new Promise((resolve) => setTimeout(resolve, PAGE_FADE_MS));
+}
+
+// Undo fadeOutPage after a client-side navigation; the incoming page runs its own fade-in
+export function resetPageFade() {
+  document.body.style.removeProperty("transition");
+  document.body.style.removeProperty("opacity");
+}
 
 export async function fetchInventoryFromJSON(steamId: string): Promise<InventoryItem[]> {
   console.log("Fetching inventory data from json...");
@@ -20,7 +39,18 @@ export async function fetchInventoryFromJSON(steamId: string): Promise<Inventory
   }
 }
 
-export async function fetchAllInventoryData(authData: string, loginType: number): Promise<any | null> {
+let inFlightInventoryFetch: Promise<any | null> | null = null;
+
+// Concurrent callers (e.g. React Strict Mode double effects) share one request, since the server
+// rejects overlapping GC connections.
+export function fetchAllInventoryData(authData: string, loginType: number): Promise<any | null> {
+  inFlightInventoryFetch ??= requestAllInventoryData(authData, loginType).finally(() => {
+    inFlightInventoryFetch = null;
+  });
+  return inFlightInventoryFetch;
+}
+
+async function requestAllInventoryData(authData: string, loginType: number): Promise<any | null> {
   console.log("Fetching private inventory data from steam client...");
 
   try {

@@ -8,6 +8,8 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { ChevronDown } from "lucide-react"
 import { ProfileData } from "@/types/profile"
+import { fadeOutPage } from "@/lib/utils"
+import { useRouter } from "next/navigation"
 
 
 export function UserProfile({ steamId, currencies, selectedCurrency, setSelectedCurrency }: { 
@@ -54,17 +56,23 @@ export function UserProfile({ steamId, currencies, selectedCurrency, setSelected
   }, [steamId])
 
 
+  const router = useRouter()
+
   // Function to handle logout and redirect to homepage
   const handleLogout = () => {
     localStorage.removeItem("login_type")
     localStorage.removeItem("inventory_data")
     localStorage.removeItem("selected_currency")
-    fetch(`/api/auth/logout?steamid=${steamId}`, { method: "POST" })
+    Promise.all([
+      fetch(`/api/auth/logout?steamid=${steamId}`, { method: "POST" }),
+      fadeOutPage(),
+    ])
       .then(() => {
-        window.location.replace("/")
+        router.refresh()
       })
       .catch((error) => {
         console.error("Logout error:", error)
+        document.body.style.opacity = "1"
       })
   }
 

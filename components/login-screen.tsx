@@ -15,46 +15,45 @@ import {
 import {
   QrCode,
   KeyRound,
+  CheckCircle2,
+  Clock,
   Loader2,
   SquareArrowOutUpRight,
   RefreshCw,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { createSteamSession } from "@/lib/session";
+import { fadeOutPage, resetPageFade } from "@/lib/utils";
+
+type QrStatus = "idle" | "generating" | "waiting" | "expired" | "error" | "success";
+
+const QR_POLL_MS = 3000;
+const QR_LIFETIME_MS = 2 * 60 * 1000;
+const LOGIN_FEEDBACK_MS = 450;
+const QR_SUCCESS_FEEDBACK_MS = 900;
 
 export function LoginScreen() {
   const [jwtToken, setJwtToken] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [isPolling, setIsPolling] = useState(false);
+  const [qrStatus, setQrStatus] = useState<QrStatus>("idle");
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string | null>(null);
-  const [qrRefreshNeeded, setQrRefreshNeeded] = useState(false);
-  const [pollingError, setPollingError] = useState<string | null>(null);
-  const qrCanvasRef = useRef<HTMLCanvasElement>(null);
-  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const pollingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const pollingCountRef = useRef<number>(0);
+  // Bumped whenever a QR attempt ends so in-flight requests from an old attempt are ignored
+  const qrAttemptRef = useRef(0);
+  const qrPollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const qrExpiryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { toast } = useToast();
 
   useEffect(() => {
+    resetPageFade();
     localStorage.removeItem("inventory_data");
     localStorage.removeItem("login_type");
     localStorage.removeItem("selected_currency");
-    // return () => {
-    //   stopPolling()
-    // }
+    return () => stopQr();
   }, []);
 
-  const stopPolling = () => {
-    if (pollingIntervalRef.current) {
-      clearInterval(pollingIntervalRef.current);
-      pollingIntervalRef.current = null;
-    }
-    if (pollingTimeoutRef.current) {
-      clearTimeout(pollingTimeoutRef.current);
-      pollingTimeoutRef.current = null;
-    }
-    setIsPolling(false);
-    pollingCountRef.current = 0;
+  const stopQr = () => {
+    qrAttemptRef.current += 1;
+    if (qrPollTimeoutRef.current) clearTimeout(qrPollTimeoutRef.current);
+    if (qrExpiryTimeoutRef.current) clearTimeout(qrExpiryTimeoutRef.current);
   };
 
   const handleSteamOAuth = async () => {
@@ -69,131 +68,81 @@ export function LoginScreen() {
       })
     );
 
+    setIsLoading(true);
+    await fadeOutPage(LOGIN_FEEDBACK_MS);
     window.location.href = `/api/auth/login/steam`;
   };
 
   const handleQrLogin = async (data: any) => {
-    setIsLoading(true);
-    try {
-      stopPolling();
+    localStorage.setItem(
+      "login_type",
+      JSON.stringify({
+        timestamp: Date.now(),
+        expiresAt: Date.now() + 1000 * 60 * 60 * 7,
+        type: "qr",
+        loginType: 1,
+        authData: "", // refresh token is stored server-side only
+      })
+    );
 
-      const EXPIRATION_TIME = 1000 * 60 * 60 * 7;
-
-      localStorage.setItem(
-        "login_type",
-        JSON.stringify({
-          timestamp: Date.now(),
-          expiresAt: Date.now() + EXPIRATION_TIME,
-          type: "qr",
-          loginType: 1,
-          authData: "", // refresh token is stored server-side only
-        })
-      );
-
-      window.location.href = `/api/auth/create-session?steamid=${data.session.steamID}`;
-    } catch (error) {
-      console.error("QR login error:", error);
-      toast({
-        title: "Login failed",
-        description: error instanceof Error ? error.message : "Unknown error",
-        variant: "destructive",
-      });
-    } finally {
-      setIsLoading(false);
-      setIsPolling(false);
-    }
+    await fadeOutPage(QR_SUCCESS_FEEDBACK_MS);
+    window.location.href = `/api/auth/create-session?steamid=${data.session.steamID}`;
   };
 
-  const checkLoginStatus = async () => {
+  const pollLoginStatus = async (attempt: number) => {
     try {
-      pollingCountRef.current += 1;
-
-      if (pollingCountRef.current > 60) {
-        stopPolling();
-        setQrRefreshNeeded(true);
-        setPollingError("Polling timeout. Please refresh the QR code.");
-        return;
-      }
-
-      const response = await fetch("/api/auth/login-status", {
-        // Add cache: 'no-store' to prevent caching
-        cache: "no-store",
-        headers: {
-          // Add a timestamp to prevent caching
-          "X-Timestamp": Date.now().toString(),
-        },
-      });
-
+      const response = await fetch("/api/auth/login-status", { cache: "no-store" });
       if (!response.ok) {
         throw new Error(`Status check failed: ${response.status}`);
       }
-
       const data = await response.json();
+      if (attempt !== qrAttemptRef.current) return;
 
       if (data.loggedIn) {
-        console.log("User authenticated via QR code");
+        stopQr();
+        setQrStatus("success");
         await handleQrLogin(data);
       } else if (data.reason === "expired") {
-        stopPolling();
-        setQrRefreshNeeded(true);
-        setPollingError("Session expired. Please refresh the QR code.");
-      } else if (pollingCountRef.current > 40) {
-        setQrRefreshNeeded(true);
+        stopQr();
+        setQrStatus("expired");
+      } else {
+        qrPollTimeoutRef.current = setTimeout(() => pollLoginStatus(attempt), QR_POLL_MS);
       }
     } catch (error) {
+      if (attempt !== qrAttemptRef.current) return;
       console.error("Error checking login status:", error);
-      setPollingError("Error checking login status. Please try again.");
-      stopPolling();
+      stopQr();
+      setQrStatus("error");
     }
   };
 
-  const handleQrPolling = async (refresh = false) => {
-    setIsLoading(true);
-    setQrRefreshNeeded(false);
+  const generateQrCode = async () => {
+    stopQr();
+    const attempt = qrAttemptRef.current;
+    setQrStatus("generating");
 
     try {
-      if (pollingIntervalRef.current) {
-        clearInterval(pollingIntervalRef.current);
-        pollingIntervalRef.current = null;
-      }
-
-      const response = await fetch(
-        `/api/auth/login/qr${refresh ? "?refresh=true" : ""}`,
-        {
-          method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-          },
-        }
-      );
-
+      const response = await fetch("/api/auth/login/qr");
       if (!response.ok) {
         throw new Error(`QR code generation failed: ${response.status}`);
       }
-
       const data = await response.json();
-
-      if (data.qrCodeDataUrl) {
-        setQrCodeDataUrl(data.qrCodeDataUrl);
-        setIsPolling(true);
-
-        pollingIntervalRef.current = setInterval(checkLoginStatus, 3000);
-
-        setTimeout(() => {
-          setQrRefreshNeeded(true);
-        }, 120000);
-      } else {
+      if (!data.qrCodeDataUrl) {
         throw new Error("No QR code data received");
       }
+      if (attempt !== qrAttemptRef.current) return;
+
+      setQrCodeDataUrl(data.qrCodeDataUrl);
+      setQrStatus("waiting");
+      qrPollTimeoutRef.current = setTimeout(() => pollLoginStatus(attempt), QR_POLL_MS);
+      qrExpiryTimeoutRef.current = setTimeout(() => {
+        stopQr();
+        setQrStatus("expired");
+      }, QR_LIFETIME_MS);
     } catch (error) {
+      if (attempt !== qrAttemptRef.current) return;
       console.error("Error during QR login:", error);
-      toast({
-        title: "QR Code Generation Failed",
-        description: error instanceof Error ? error.message : "Unknown error",
-        variant: "destructive",
-      });
-    } finally {
-      setIsLoading(false);
+      setQrStatus("error");
     }
   };
 
@@ -238,6 +187,7 @@ export function LoginScreen() {
         })
       );
 
+      await fadeOutPage(LOGIN_FEEDBACK_MS);
       window.location.href = `/api/auth/login/jwt?steamid=${parsedJWT.steamid}`;
     } catch (error) {
       console.error("JWT login error:", error);
@@ -252,7 +202,7 @@ export function LoginScreen() {
   };
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-[#080c16] p-4 text-white relative overflow-hidden">
+    <div className="flex min-h-screen flex-col items-center justify-center bg-[#080c16] p-4 text-white relative overflow-hidden animate-in fade-in duration-500">
       {/* Background gradient orbs */}
       <div className="absolute top-1/4 -left-32 w-[500px] h-[500px] bg-blue-700/10 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute bottom-1/4 -right-32 w-[500px] h-[500px] bg-purple-700/10 rounded-full blur-3xl pointer-events-none" />
@@ -316,73 +266,87 @@ export function LoginScreen() {
 
             <TabsContent value="qr" className="mt-4">
               <div className="flex flex-col items-center gap-4">
-                <div className="bg-white p-4 rounded-lg">
+                <div className="relative w-full max-w-[330px] aspect-square bg-white p-4 rounded-lg flex items-center justify-center overflow-hidden">
                   {qrCodeDataUrl ? (
                     <img
-                      src={qrCodeDataUrl || "/placeholder.svg"}
-                      style={{ width: "330px", height: "330px" }}
+                      key={qrCodeDataUrl}
+                      src={qrCodeDataUrl}
                       alt="QR Code"
+                      className={`w-full h-full animate-in fade-in zoom-in-95 duration-300 transition-[filter,opacity] ${
+                        qrStatus === "waiting" || qrStatus === "success"
+                          ? ""
+                          : "blur-sm opacity-30"
+                      }`}
                     />
                   ) : (
-                    <QrCode className="h-48 w-48 text-gray-900" />
+                    <QrCode
+                      className={`h-48 w-48 text-gray-900 ${
+                        qrStatus === "generating" ? "animate-pulse" : ""
+                      }`}
+                    />
+                  )}
+                  {qrCodeDataUrl && qrStatus === "expired" && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-gray-900 animate-in fade-in duration-300">
+                      <Clock className="h-8 w-8" />
+                      <p className="font-semibold">QR code expired</p>
+                    </div>
+                  )}
+                  {qrStatus === "success" && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/80 text-green-600 animate-in fade-in duration-300">
+                      <CheckCircle2 className="h-10 w-10" />
+                      <p className="font-semibold">Signed in</p>
+                    </div>
                   )}
                 </div>
 
-                <div className="flex flex-col w-full gap-2">
-                  {!qrCodeDataUrl ? (
+                <div className="flex flex-col w-full gap-2 min-h-[64px] justify-center">
+                  {qrStatus === "waiting" && (
+                    <div className="text-center text-sm text-gray-400 animate-in fade-in duration-300">
+                      <div className="flex items-center justify-center gap-2">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Scan with the Steam mobile app
+                      </div>
+                      <p className="mt-1 text-xs text-gray-500">
+                        Code expires after 2 minutes
+                      </p>
+                    </div>
+                  )}
+
+                  {qrStatus === "success" && (
+                    <div className="flex items-center justify-center gap-2 text-sm text-green-400 animate-in fade-in duration-300">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Loading your inventory...
+                    </div>
+                  )}
+
+                  {(qrStatus === "expired" || qrStatus === "error") && (
+                    <p className="text-center text-sm text-gray-400 animate-in fade-in duration-300">
+                      {qrStatus === "expired"
+                        ? "This code was not scanned in time."
+                        : "Something went wrong. Please try again."}
+                    </p>
+                  )}
+
+                  {qrStatus !== "waiting" && qrStatus !== "success" && (
                     <Button
-                      onClick={() => handleQrPolling(false)}
+                      onClick={generateQrCode}
                       className="w-full"
-                      disabled={isLoading}
+                      disabled={qrStatus === "generating"}
                     >
-                      {isLoading ? (
+                      {qrStatus === "generating" ? (
                         <>
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                           Generating QR Code...
                         </>
-                      ) : (
+                      ) : qrStatus === "idle" ? (
                         "Generate QR Code"
+                      ) : (
+                        <>
+                          <RefreshCw className="mr-2 h-4 w-4" />
+                          Generate New Code
+                        </>
                       )}
                     </Button>
-                  ) : (
-                    <>
-                      {isPolling && !pollingError && (
-                        <div className="text-center text-sm text-gray-400 flex items-center justify-center gap-2">
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                          Waiting for QR scan...
-                        </div>
-                      )}
-
-                      {pollingError && (
-                        <div className="text-center text-sm text-red-400 mb-2">
-                          {pollingError}
-                        </div>
-                      )}
-
-                      {(qrRefreshNeeded || pollingError) && (
-                        <div className="text-center text-sm text-amber-400 mb-2">
-                          QR code may have expired. Please refresh.
-                        </div>
-                      )}
-
-                      <Button
-                        onClick={() => handleQrPolling()}
-                        className="w-full border-gray-600"
-                        disabled={isLoading}
-                      >
-                        {isLoading ? (
-                          <>
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            Refreshing...
-                          </>
-                        ) : (
-                          <>
-                            <RefreshCw className="mr-2 h-4 w-4" />
-                            Refresh QR Code
-                          </>
-                        )}
-                      </Button>
-                    </>
                   )}
                 </div>
               </div>
